@@ -19,6 +19,10 @@ from selenium.webdriver.common.proxy import Proxy, ProxyType
 import tls_client
 import base64
 import ssl
+import subprocess
+import pyautogui
+
+pyautogui.FAILSAFE = False
 
 banner = f'''
 ██████╗ ██╗██╗   ██╗███████╗██████╗ 
@@ -180,6 +184,17 @@ def fill_date_of_birth(driver, month, day, year):
     click_and_pick(2, str(year))
     print(f"{timestamp()} {Fore.GREEN}Date set.{Style.RESET_ALL}")
 
+def get_chrome_major_version():
+    """Return installed Chromium major version so the driver matches."""
+    binary = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
+    try:
+        out = subprocess.check_output([binary, "--version"], stderr=subprocess.STDOUT).decode()
+        m = re.search(r"(\d+)\.", out)
+        return int(m.group(1)) if m else None
+    except Exception as e:
+        print(f"{timestamp()} {Fore.YELLOW}Could not detect Chrome version: {e}{Style.RESET_ALL}")
+        return None
+        
 def main():
     print(Colorate.Vertical(Colors.purple_to_blue, Center.XCenter(banner)))
     while True:
@@ -192,21 +207,27 @@ def main():
         driver = None
         try:
             options = uc.ChromeOptions()
-            options.add_argument("--disable-popup-blocking")
+            options.binary_location = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
+
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--disable-software-rasterizer")
+            options.add_argument("--disable-popup-blocking")
+            options.add_argument("--no-first-run")
+            options.add_argument("--no-default-browser-check")
+            options.add_argument("--disable-background-networking")
+            options.add_argument("--window-size=1920,1080")
             options.add_argument("--ignore-certificate-errors")
             options.add_argument("--lang=en-US")
             options.add_experimental_option("prefs", {"intl.accept_languages": "en-US,en"})
 
-            #curdir = os.path.dirname(os.path.abspath(__file__))
-            #ext_path = os.path.join(curdir, "DKNLFMJAANFBLGFDFEBHIJALFMHMJJJO_0_6_1_0")
-            #options.add_argument(f"--load-extension={ext_path}")
-
-            # fuck you google ur not fun :(
-
-            driver = uc.Chrome(options=options)
-            driver.maximize_window()
+            driver = uc.Chrome(
+                options=options,
+                driver_executable_path=os.environ.get("CHROMEDRIVER_BIN", "/usr/bin/chromedriver"),
+                version_main=get_chrome_major_version(),
+            )
+            driver.set_window_size(1920, 1080)
             
             install_nopecha(driver)
             
