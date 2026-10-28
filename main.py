@@ -19,7 +19,6 @@ from selenium.webdriver.common.proxy import Proxy, ProxyType
 import tls_client
 import base64
 import ssl
-ssl._create_default_https_context = ssl._create_unverified_context
 
 banner = f'''
 ██████╗ ██╗██╗   ██╗███████╗██████╗ 
@@ -90,8 +89,6 @@ def account_ratelimit():
 
 
 init(autoreset=True)
-os.system("cls")
-os.system("title Ultimate EV GEN V1 By Anomus.LY_")
 def random_sleep(base=2, variation=3):
     time.sleep(base + random.uniform(0, variation))
 
