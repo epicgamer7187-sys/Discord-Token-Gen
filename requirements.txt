@@ -1,5 +1,7 @@
-undetected-chromedriver
 selenium
+undetected-chromedriver
+setuptools
+packaging
 colorama
 fake-useragent
 pystyle
