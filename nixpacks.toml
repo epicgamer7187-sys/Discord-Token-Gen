@@ -1,0 +1,5 @@
+[phases.setup]
+aptPkgs = ["xvfb", "scrot", "chromium", "chromium-driver", "fonts-liberation", "libgbm1", "libasound2"]
+
+[start]
+cmd = "xvfb-run -a python -u main.py"
