@@ -1,0 +1,12 @@
+.git
+.gitignore
+.DS_Store
+*.log
+__pycache__/
+*.pyc
+venv/
+.env
+tokens.txt
+evs.txt
+DKNLFMJAANFBLGFDFEBHIJALFMHMJJJO_*
+*.zip
