@@ -1,12 +1,7 @@
+DKNLFMJAANFBLGFDFEBHIJALFMHMJJJO_0_6_1_0
 .git
-.gitignore
 .DS_Store
-*.log
-__pycache__/
+__pycache__
 *.pyc
-venv/
-.env
 tokens.txt
 evs.txt
-DKNLFMJAANFBLGFDFEBHIJALFMHMJJJO_*
-*.zip
