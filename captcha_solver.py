@@ -7,14 +7,13 @@ Env:
     NOPECHA_KEY / CAPMONSTER_KEY / CAPSOLVER_KEY / TWOCAPTCHA_KEY / NONECAP_KEY
     SOLVER_TIMEOUT  seconds per solve (default 90)
     SOLVER_POLL     poll interval seconds (default 3)
-    SOLVER_ENTERPRISE  1 / 0 to force enterprise mode, else auto-detected
+    SOLVER_ENTERPRISE / SOLVER_INVISIBLE   1 / 0 overrides, else set by caller
 
 Providers return a real hCaptcha response token (P1_... / E0_... style string),
 the value that belongs in the h-captcha-response field.
 
-Enterprise note: Discord's register page uses an enterprise sitekey. Tokens
-minted without the challenge's rqdata get rejected server-side, so rqdata is
-passed through whenever the caller has it.
+Discord's register flow issues an invisible, session-bound challenge. Invisible
+solves must be requested explicitly or the token is not accepted.
 
 NOTE (Oct 2026): NopeCHA retired its hCaptcha endpoint on 2026-10-02 and now
 answers HTTP 410 code 19.
@@ -63,7 +62,7 @@ class _Provider:
     def __init__(self, key):
         self.key = key
 
-    def solve(self, sitekey, url, proxy=None, rqdata=None, enterprise=False):
+    def solve(self, sitekey, url, proxy=None, rqdata=None, enterprise=False, invisible=False):
         raise NotImplementedError
 
 
@@ -72,12 +71,14 @@ class NopeCHA(_Provider):
     key_env = "NOPECHA_KEY"
     API = "https://api.nopecha.com/token"
 
-    def solve(self, sitekey, url, proxy=None, rqdata=None, enterprise=False):
+    def solve(self, sitekey, url, proxy=None, rqdata=None, enterprise=False, invisible=False):
         body = {"key": self.key, "type": "hcaptcha", "sitekey": sitekey, "url": url}
         if enterprise:
             body["enterprise"] = True
-            if rqdata:
-                body["data"] = {"rqdata": rqdata}
+        if invisible:
+            body["invisible"] = True
+        if rqdata:
+            body["data"] = {"rqdata": rqdata}
         if proxy:
             body["proxy"] = _split_proxy(proxy)
         r = requests.post(self.API, json=body, timeout=30, proxies=_proxies(proxy))
@@ -116,12 +117,14 @@ class _TaskPoll(_Provider):
     task_proxied = ""
     task_proxyless = ""
 
-    def _task(self, sitekey, url, proxy, rqdata, enterprise):
+    def _task(self, sitekey, url, proxy, rqdata, enterprise, invisible):
         base = {"websiteURL": url, "websiteKey": sitekey}
         if enterprise:
             base["isEnterprise"] = True
-            if rqdata:
-                base["enterprisePayload"] = {"rqdata": rqdata}
+        if invisible:
+            base["isInvisible"] = True
+        if rqdata:
+            base["enterprisePayload"] = {"rqdata": rqdata}
         if not proxy:
             return {**base, "type": self.task_proxyless}
         p = _split_proxy(proxy)
@@ -137,10 +140,10 @@ class _TaskPoll(_Provider):
             task["proxyPassword"] = p.get("password", "")
         return task
 
-    def solve(self, sitekey, url, proxy=None, rqdata=None, enterprise=False):
+    def solve(self, sitekey, url, proxy=None, rqdata=None, enterprise=False, invisible=False):
         r = requests.post(self.create_url, timeout=30, proxies=_proxies(proxy),
                           json={"clientKey": self.key,
-                                "task": self._task(sitekey, url, proxy, rqdata, enterprise)})
+                                "task": self._task(sitekey, url, proxy, rqdata, enterprise, invisible)})
         data = r.json() if r.content else {}
         if data.get("errorId"):
             raise SolverError(f"{self.name}: {data.get('errorCode')} {data.get('errorDescription', '')}")
@@ -186,13 +189,15 @@ class TwoCaptcha(_Provider):
     name = "2captcha"
     key_env = "TWOCAPTCHA_KEY"
 
-    def solve(self, sitekey, url, proxy=None, rqdata=None, enterprise=False):
+    def solve(self, sitekey, url, proxy=None, rqdata=None, enterprise=False, invisible=False):
         body = {"key": self.key, "method": "hcaptcha", "sitekey": sitekey,
                 "pageurl": url, "json": 1, "userAgent": UA}
         if enterprise:
             body["enterprise"] = 1
-            if rqdata:
-                body["data"] = rqdata
+        if invisible:
+            body["invisible"] = 1
+        if rqdata:
+            body["data"] = rqdata
         if proxy:
             p = _split_proxy(proxy)
             body["proxy"] = f"{p['host']}:{p['port']}"
@@ -223,10 +228,12 @@ class NoneCap(_Provider):
     name = "nonecap"
     key_env = "NONECAP_KEY"
 
-    def solve(self, sitekey, url, proxy=None, rqdata=None, enterprise=False):
+    def solve(self, sitekey, url, proxy=None, rqdata=None, enterprise=False, invisible=False):
         body = {"type": "hcaptcha_enterprise" if enterprise else "hcaptcha",
                 "sitekey": sitekey, "url": url}
-        if enterprise and rqdata:
+        if invisible:
+            body["invisible"] = True
+        if rqdata:
             body["rqdata"] = rqdata
         r = requests.post(
             "https://api.nonecap.com/v1/solves",
@@ -279,7 +286,8 @@ def configured(log=print):
     return out
 
 
-def solve_hcaptcha(sitekey, url, proxy=None, rqdata=None, enterprise=False, log=print):
+def solve_hcaptcha(sitekey, url, proxy=None, rqdata=None, enterprise=False,
+                   invisible=False, log=print):
     """Try every configured provider in order. Returns a token or raises SolverError."""
     providers = configured(log)
     if not providers:
@@ -288,9 +296,9 @@ def solve_hcaptcha(sitekey, url, proxy=None, rqdata=None, enterprise=False, log=
     for p in providers:
         started = time.time()
         kind = "hcaptcha_enterprise" if enterprise else "hcaptcha"
-        log(f"{p.name}: submitting {kind} job (rqdata={'yes' if rqdata else 'no'})...")
+        log(f"{p.name}: submitting {kind} job (invisible={invisible}, rqdata={'yes' if rqdata else 'no'})...")
         try:
-            tok = p.solve(sitekey, url, proxy, rqdata, enterprise)
+            tok = p.solve(sitekey, url, proxy, rqdata, enterprise, invisible)
             log(f"{p.name}: token received in {time.time() - started:.1f}s")
             return tok
         except Discontinued as e:
