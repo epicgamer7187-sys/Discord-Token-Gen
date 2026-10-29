@@ -38,6 +38,8 @@ SUBMIT_WAIT = int(os.environ.get("SUBMIT_WAIT", "12"))
 SHOT_DIR = os.environ.get("SHOT_DIR", "/data/shots" if os.path.isdir("/data") else "/tmp/shots")
 SITEKEY_CACHE = os.environ.get(
     "SITEKEY_CACHE", "/data/sitekey.txt" if os.path.isdir("/data") else "/tmp/sitekey.txt")
+ENTERPRISE_OVERRIDE = os.environ.get("SOLVER_ENTERPRISE")
+INVISIBLE_OVERRIDE = os.environ.get("SOLVER_INVISIBLE")
 
 REGISTER_URL = "https://discord.com/api/v9/auth/register"
 PAGE_URL = "https://discord.com/register"
@@ -181,7 +183,33 @@ def save_shot(driver, tag):
         pass
 
 
+def challenge_flags(challenge):
+    """Discord spells the invisible flag two ways depending on build."""
+    invisible_raw = (challenge.get("should_serve_invisible")
+                     or challenge.get("should_serve_invisible_captcha"))
+    if INVISIBLE_OVERRIDE is not None:
+        invisible = INVISIBLE_OVERRIDE.strip() == "1"
+    else:
+        invisible = bool(invisible_raw)
+
+    service = (challenge.get("captcha_service") or "hcaptcha").lower()
+    rqdata = challenge.get("captcha_rqdata")
+    if ENTERPRISE_OVERRIDE is not None:
+        enterprise = ENTERPRISE_OVERRIDE.strip() == "1"
+    else:
+        enterprise = service.endswith("enterprise") or bool(rqdata)
+    return enterprise, invisible, rqdata
+
+
 # -------------------------------------------------------------- rate limits
+
+def make_client(proxy=None):
+    client = tls_client.Session(client_identifier="chrome_120")
+    client.headers = {**API_HEADERS, "x-super-properties": SUPER_PROPS}
+    if proxy:
+        client.proxies = {"http": proxy, "https": proxy}
+    return client
+
 
 def account_ratelimit():
     try:
@@ -197,14 +225,6 @@ def account_ratelimit():
 
 
 # --------------------------------------------------------------------- api
-
-def make_client(proxy=None):
-    client = tls_client.Session(client_identifier="chrome_120")
-    client.headers = {**API_HEADERS, "x-super-properties": SUPER_PROPS}
-    if proxy:
-        client.proxies = {"http": proxy, "https": proxy}
-    return client
-
 
 def build_payload(email, password, captcha=None, rqdata=None, session_id=None):
     payload = {
@@ -257,18 +277,15 @@ def api_register(email, password, captcha=None, rqdata=None, session_id=None):
                 continue
 
             sitekey = challenge.get("captcha_sitekey") or sitekey_candidates()[0]
-            service = (challenge.get("captcha_service") or "hcaptcha").lower()
-            enterprise = service.endswith("enterprise")
-            invisible = bool(challenge.get("should_serve_invisible_captcha"))
-            rqdata = challenge.get("captcha_rqdata") or rqdata
+            enterprise, invisible, challenge_rq = challenge_flags(challenge)
+            rqdata = challenge_rq or rqdata
             session_id = challenge.get("captcha_session_id") or session_id
-            if sitekey:
-                cache_sitekey(sitekey)
+            cache_sitekey(sitekey)
 
             log(f"attempt {attempt}/{SOLVE_ATTEMPTS} challenge: sitekey={sitekey[:8]}... "
-                f"service={service} invisible={invisible} "
-                f"session={'yes' if session_id else 'no'} rqdata={'yes' if rqdata else 'no'}",
-                Fore.MAGENTA)
+                f"service={challenge.get('captcha_service')} invisible={invisible} "
+                f"enterprise={enterprise} session={'yes' if session_id else 'no'} "
+                f"rqdata={len(rqdata) if rqdata else 0}b", Fore.MAGENTA)
 
             try:
                 captcha = solve_hcaptcha(sitekey, PAGE_URL, proxy, rqdata=rqdata,
@@ -523,8 +540,7 @@ def register_hybrid(email):
     driver = build_driver(proxy)
     try:
         open_register_page(driver, email, password)
-        sitekey, rqdata = read_widget(driver)
-        sitekey = sitekey or sitekey_candidates()[0]
+        read_widget(driver)
         log("hybrid: browser renders the challenge, API submits", Fore.MAGENTA)
         return api_register(email, password)
     finally:
@@ -542,7 +558,8 @@ def register_in_browser(email):
             log(f"browser attempt {attempt}/{SOLVE_ATTEMPTS}", Fore.YELLOW)
             try:
                 token = solve_hcaptcha(sitekey or sitekey_candidates()[0], PAGE_URL, proxy,
-                                       rqdata=rqdata, invisible=True, log=log)
+                                       rqdata=rqdata, enterprise=bool(rqdata),
+                                       invisible=True, log=log)
             except SolverError as e:
                 log(f"solve failed: {e}", Fore.RED)
                 random_sleep(2, 3)
