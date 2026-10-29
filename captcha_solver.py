@@ -5,16 +5,16 @@ Env:
     SOLVERS         comma list, tried in order
                     (default: nopecha,capmonster,capsolver,2captcha,nonecap)
     NOPECHA_KEY / CAPMONSTER_KEY / CAPSOLVER_KEY / TWOCAPTCHA_KEY / NONECAP_KEY
-    SOLVER_TIMEOUT  seconds per solve (default 180)
+    SOLVER_TIMEOUT  seconds per solve (default 90)
     SOLVER_POLL     poll interval seconds (default 3)
     SOLVER_ENTERPRISE  1 / 0 to force enterprise mode, else auto-detected
 
-Every provider hands back a real hCaptcha response token (P1_... / E0_... style
-string) - the value that belongs in the h-captcha-response field.
+Providers return a real hCaptcha response token (P1_... / E0_... style string),
+the value that belongs in the h-captcha-response field.
 
 Enterprise note: Discord's register page uses an enterprise sitekey. Tokens
-minted without the challenge's rqdata are rejected server-side, so rqdata is
-passed through when the caller has it.
+minted without the challenge's rqdata get rejected server-side, so rqdata is
+passed through whenever the caller has it.
 
 NOTE (Oct 2026): NopeCHA retired its hCaptcha endpoint on 2026-10-02 and now
 answers HTTP 410 code 19.
@@ -27,7 +27,7 @@ import requests
 
 DISCORD_SITEKEY = "f5561ba9-8f1e-40ca-9e68-6b8aa015b4b8"
 
-TIMEOUT = int(os.environ.get("SOLVER_TIMEOUT", "180"))
+TIMEOUT = int(os.environ.get("SOLVER_TIMEOUT", "90"))
 POLL = float(os.environ.get("SOLVER_POLL", "3"))
 DEFAULT_ORDER = "nopecha,capmonster,capsolver,2captcha,nonecap"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -238,12 +238,14 @@ class NoneCap(_Provider):
         )
         if r.status_code == 401:
             raise SolverError("nonecap: invalid key")
+        if r.status_code >= 400:
+            raise SolverError(f"nonecap: http {r.status_code} {r.text[:160]}")
         data = r.json() if r.content else {}
         if data.get("status") == "solved" and data.get("token"):
             return data["token"]
         job = data.get("id")
         if not job:
-            raise SolverError(f"nonecap: {data}")
+            raise SolverError(f"nonecap: submit rejected {str(data)[:160]}")
         deadline = time.time() + TIMEOUT
         while time.time() < deadline:
             time.sleep(POLL)
@@ -254,7 +256,8 @@ class NoneCap(_Provider):
             if d.get("status") == "solved" and d.get("token"):
                 return d["token"]
             if d.get("status") in ("failed", "error"):
-                raise SolverError(f"nonecap: {d.get('status')}")
+                raise SolverError(f"nonecap: {d.get('status')} "
+                                  f"{str(d.get('error') or d.get('message') or '')[:140]}")
         raise SolverError("nonecap: solve timeout")
 
 
