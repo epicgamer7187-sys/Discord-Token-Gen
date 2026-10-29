@@ -1,11 +1,8 @@
 selenium==4.25.0
 undetected-chromedriver==3.5.5
-python-xlib
 setuptools
 packaging
 colorama
-fake-useragent
 pystyle
 requests
 tls-client
-pyautogui
