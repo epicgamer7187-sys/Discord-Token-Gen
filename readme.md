@@ -82,3 +82,24 @@ Looking for something unique? DM us on Discord with your idea and budget!
 
 ```
 
+## Solver configuration (env vars on Railway)
+
+Captcha is solved over HTTP API - no Chrome extension is installed.
+
+| Variable | Meaning |
+| --- | --- |
+| `NOPECHA_KEY` | NopeCHA key. hCaptcha endpoint is dead since 2026-10-02 (HTTP 410). |
+| `CAPMONSTER_KEY` | CapMonster Cloud key (proxied + proxyless tasks supported) |
+| `CAPSOLVER_KEY` | CapSolver key |
+| `TWOCAPTCHA_KEY` | 2Captcha key |
+| `NONECAP_KEY` | NoneCap key (hCaptcha only) |
+| `SOLVERS` | override order, default `nopecha,capmonster,capsolver,2captcha,nonecap` |
+| `SOLVER_TIMEOUT` | seconds per solve, default `180` |
+| `REGISTER_MODE` | `browser` (default) or `api` (no Chromium at all) |
+| `GLOBAL_NAME` / `ACCOUNT_PASSWORD` / `DATE_OF_BIRTH` | account identity, defaults `Lunarxterm` / =email / `2000-09-20` |
+| `SOLVE_ATTEMPTS` | captcha/submit retries per account, default `3` |
+| `CHROME_HEADLESS` | `1` to drop Xvfb rendering |
+
+Set at least one key besides NopeCHA or nothing will solve.
+Put proxies in `proxies.txt` (`host:port` or `host:port:user:pass`, one per line).
+Proxy auth on the browser side needs IP whitelisting, Chrome cannot type credentials.
