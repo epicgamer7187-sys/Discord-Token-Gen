@@ -4,7 +4,7 @@ set -uo pipefail
 
 export DISPLAY="${DISPLAY:-:99}"
 
-echo "==> boot: pwd=$(pwd) display=$DISPLAY python=$(command -v python) mode=${REGISTER_MODE:-api}"
+echo "==> boot: pwd=$(pwd) display=$DISPLAY python=$(command -v python) mode=${REGISTER_MODE:-hybrid}"
 
 # ---- persist generated files on the Railway volume (mounted at /data) ----
 if [ -d /data ]; then
