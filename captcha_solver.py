@@ -12,8 +12,10 @@ Env:
 Providers return a real hCaptcha response token (P1_... / E0_... style string),
 the value that belongs in the h-captcha-response field.
 
-Discord's register flow issues an invisible, session-bound challenge. Invisible
-solves must be requested explicitly or the token is not accepted.
+Enterprise note: Discord's register flow issues an invisible, session-bound,
+rqdata-carrying challenge. rqdata is single-use per challenge, and enterprise
+verification checks that the solving IP matches the submitting IP - so the same
+proxy must be handed to the solver and used for the register POST.
 
 NOTE (Oct 2026): NopeCHA retired its hCaptcha endpoint on 2026-10-02 and now
 answers HTTP 410 code 19.
@@ -229,12 +231,16 @@ class NoneCap(_Provider):
     key_env = "NONECAP_KEY"
 
     def solve(self, sitekey, url, proxy=None, rqdata=None, enterprise=False, invisible=False):
+        # NoneCap needs no invisible flag: invisible sitekeys take the same body
+        # as a checkbox widget. The proxy matters though - enterprise checks the
+        # solving IP against the submitting IP.
         body = {"type": "hcaptcha_enterprise" if enterprise else "hcaptcha",
                 "sitekey": sitekey, "url": url}
-        if invisible:
-            body["invisible"] = True
         if rqdata:
             body["rqdata"] = rqdata
+        if proxy:
+            body["proxy"] = proxy
+
         r = requests.post(
             "https://api.nonecap.com/v1/solves",
             params={"wait": 90},
@@ -296,7 +302,8 @@ def solve_hcaptcha(sitekey, url, proxy=None, rqdata=None, enterprise=False,
     for p in providers:
         started = time.time()
         kind = "hcaptcha_enterprise" if enterprise else "hcaptcha"
-        log(f"{p.name}: submitting {kind} job (invisible={invisible}, rqdata={'yes' if rqdata else 'no'})...")
+        log(f"{p.name}: submitting {kind} job (invisible={invisible}, "
+            f"proxy={'yes' if proxy else 'no'}, rqdata={'yes' if rqdata else 'no'})...")
         try:
             tok = p.solve(sitekey, url, proxy, rqdata, enterprise, invisible)
             log(f"{p.name}: token received in {time.time() - started:.1f}s")
