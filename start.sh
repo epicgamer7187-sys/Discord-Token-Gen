@@ -4,7 +4,7 @@ set -uo pipefail
 
 export DISPLAY="${DISPLAY:-:99}"
 
-echo "==> boot: pwd=$(pwd) display=$DISPLAY python=$(command -v python)"
+echo "==> boot: pwd=$(pwd) display=$DISPLAY python=$(command -v python) mode=${REGISTER_MODE:-browser}"
 
 # ---- persist generated files on the Railway volume (mounted at /data) ----
 if [ -d /data ]; then
@@ -22,7 +22,18 @@ else
   echo "!! no /data volume - output will be lost on redeploy"
 fi
 
-# ---- virtual X display (pyautogui cannot even import without DISPLAY) ----
+# ---- solver keys -------------------------------------------------------
+KEYS=""
+for v in NOPECHA_KEY CAPMONSTER_KEY CAPSOLVER_KEY TWOCAPTCHA_KEY NONECAP_KEY; do
+  [ -n "${!v:-}" ] && KEYS="$KEYS ${v}"
+done
+if [ -z "$KEYS" ]; then
+  echo "!! NO SOLVER KEY SET - every captcha will fail. Set at least one *_KEY."
+else
+  echo "==> solver keys present:$KEYS"
+fi
+
+# ---- virtual X display -------------------------------------------------
 Xvfb "$DISPLAY" -screen 0 1920x1080x24 -nolisten tcp &
 XVFB_PID=$!
 for _ in $(seq 1 100); do
@@ -33,11 +44,10 @@ xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 \
   && echo "==> display $DISPLAY is up (pid $XVFB_PID)" \
   || echo "!! display $DISPLAY never came up"
 
-# ---- loud sanity checks instead of silent death ----
+# ---- binary sanity -----------------------------------------------------
 command -v chromium     >/dev/null || echo "!! chromium missing"
 command -v chromedriver >/dev/null || echo "!! chromedriver missing"
-command -v scrot        >/dev/null || echo "!! scrot missing"
-[ -s proxies.txt ] || echo "!! proxies.txt is EMPTY - generator will very likely fail"
+[ -s proxies.txt ] || echo "!! proxies.txt is EMPTY - datacenter IP, expect heavy captcha friction"
 
 echo "==> launching main.py"
 python -u main.py 2>&1 | tee /tmp/run/run.log
