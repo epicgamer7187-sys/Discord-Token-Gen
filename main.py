@@ -1,28 +1,40 @@
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
-from colorama import Fore, Style, init
-from fake_useragent import UserAgent
-from pystyle import *
-import requests
+import os
+import re
+import sys
+import json
 import time
 import random
 import string
-import re
-import os
-from datetime import datetime
-from selenium.common.exceptions import TimeoutException
-from selenium.webdriver.common.proxy import Proxy, ProxyType
-import tls_client
-import base64
-import ssl
+import shutil
+import tempfile
 import subprocess
-import pyautogui
+import traceback
+from datetime import datetime
+from urllib.parse import urlsplit, urlunsplit
 
-pyautogui.FAILSAFE = False
+import requests
+import tls_client
+import undetected_chromedriver as uc
+from colorama import Fore, Style, init
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.support.ui import WebDriverWait, Select as SeleniumSelect
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
+
+from captcha_solver import solve_hcaptcha, configured as configured_solvers, DISCORD_SITEKEY, SolverError
+
+init(autoreset=True)
+
+REGISTER_MODE = os.environ.get("REGISTER_MODE", "browser").strip().lower()
+GLOBAL_NAME = os.environ.get("GLOBAL_NAME", "Lunarxterm")
+FIXED_PASSWORD = os.environ.get("ACCOUNT_PASSWORD", "").strip()
+DOB = os.environ.get("DATE_OF_BIRTH", "2000-09-20").strip()
+TOKENS_FILE = os.environ.get("TOKENS_FILE", "tokens.txt")
+EVS_FILE = os.environ.get("EVS_FILE", "evs.txt")
+PROXY_FILE = os.environ.get("PROXY_FILE", "proxies.txt")
+SOLVE_ATTEMPTS = int(os.environ.get("SOLVE_ATTEMPTS", "3"))
+LOGIN_WAIT = int(os.environ.get("LOGIN_WAIT", "90"))
 
 banner = f'''
 ██████╗ ██╗██╗   ██╗███████╗██████╗ 
@@ -30,124 +42,192 @@ banner = f'''
 ██████╔╝██║██║   ██║█████╗  ██████╔╝
 ██╔══██╗██║╚██╗ ██╔╝██╔══╝  ██╔══██╗
 ██║  ██║██║ ╚████╔╝ ███████╗██║  ██║
-╚═╝  ╚═╝╚═╝  ╚═══╝  ╚══════╝╚═╝  ╚═╝                                                     
+╚═╝  ╚═╝╚═╝  ╚═══╝  ╚══════╝╚═╝  ╚═╝
 🚀 Ultimate EVS Tool 🚀
 [+] Programmed By Anomus.LY
 [+] Modified By Uzif
 [+] https://haxs.dev/
-
+[+] captcha: API mode (no extension)
 '''
 
+API_HEADERS = {
+    "accept": "*/*",
+    "content-type": "application/json",
+    "origin": "https://discord.com",
+    "referer": "https://discord.com/register",
+    "user-agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+    "x-discord-locale": "en-US",
+}
 
 
-
-def account_ratelimit():
-    """Fetches rate limit using account creation data."""
-    try:
-        m = format(''.join(random.choice(string.digits) for _ in range(6)))
-        email = format(''.join(random.choice(string.ascii_lowercase) for _ in range(9)))+m
-        mail = "{}@gmail.com".format(''.join(random.choice(string.ascii_lowercase) for _ in range(11)))
-        nam = "ultimate"
-        client = tls_client.Session(client_identifier='chrome_110')
-        client.headers = {
-                "Accept": "*/*",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Content-Type": "application/json",
-                "DNT": "1",
-                "Host": "discord.com",
-                "Origin": "https://discord.com",
-                "Referer": 'https://discord.com/register',
-                "Sec-Fetch-Dest": "empty",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Site": "same-origin",
-                "Sec-GPC": "1",
-                "TE": "trailers",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-                "X-Debug-Options": "bugReporterEnabled",
-                "X-Discord-Locale": "en-US",
-                "X-Discord-Timezone": "Asia/Calcutta",
-                "X-Super-Properties": 'eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIEZyYW1lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImdyLUFSIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS80LjAgKGNvbXBhdGlibGU7IE1TSUUgOC4wOyBXaW5kb3dzIE5UIDYuMTsgVHJpZGVudC80LjA7IEdUQjcuNDsgY2hyb21lZnJhbWUvMjQuMC4xMzEyLjU3OyBTTENDMjsgLk5FVCBDTFIgMi4wLjUwNzI3OyAuTkVUIENMUiAzLjUuMzA3Mjk7IC5ORVQgQ0xSIDMuMC4zMDcyOTsgLk5FVDQuMEM7IEluZm9QYXRoLjM7IE1TLVJUQyBMTSA4OyBCUkkvMikiLCJicm93c2VyX3ZlcnNpb24iOiIyNC4wLjEzMTIiLCJvc192ZXJzaW9uIjoiNyIsInJlZmVycmVyIjoiaHR0cHM6Ly93d3cueW91dHViZS5jb20vIiwicmVmZXJyaW5nX2RvbWFpbiI6Ind3dy55b3V0dWJlLmNvbSIsInNlYXJjaF9lbmdpbmUiOiJhc2suY29tIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjE0ODQ3OSwiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbH0=',
-            }
-        data = {
-                'email': mail,
-                'password': 'ultimate12$$',
-                'date_of_birth': "2000-09-20",
-                'username': email,
-                'consent': True,
-                'captcha_service': 'hcaptcha',
-                'global_name': nam,
-                'captcha_key': None,
-                'invite': None,
-                'promotional_email_opt_in': False,
-                'gift_code_sku_id': None
-            }
-        req = client.post(f'https://discord.com/api/v9/auth/register', json=data)
-        if 'The resource is being rate limited' in req.text:
-                limit = req.json()['retry_after']
-                return limit
-        else:
-                return 1
-    except Exception as e:
-        print(f'{Fore.RED} Error fetching rate limit: {str(e)}')
-
-
-init(autoreset=True)
-def random_sleep(base=2, variation=3):
-    time.sleep(base + random.uniform(0, variation))
-
-
+# ------------------------------------------------------------------ helpers
 
 def timestamp():
     return f"{Fore.LIGHTBLACK_EX}[{datetime.now().strftime('%H:%M:%S %d-%m-%Y')}]"
 
-def print_templog(temp_email):
-    print(f"{timestamp()} {Fore.BLUE}Using tempmail{Style.RESET_ALL}: {Fore.GREEN}{temp_email}{Style.RESET_ALL}")
 
-def install_nopecha(driver):
-    print(f"{timestamp()} {Fore.YELLOW}Installing NopeCHA from Chrome Web Store...{Style.RESET_ALL}")
-    driver.get("https://chromewebstore.google.com/detail/nopecha-captcha-solver/dknlfmjaanfblgfdfebhijalfmhmjjjo")
-    time.sleep(3)
-    # Click "Add to Chrome" button
-    add_button = WebDriverWait(driver, 15).until(
-        EC.element_to_be_clickable((By.XPATH, '//button[contains(., "Add to Chrome") or contains(., "Aggiungi a Chrome") or contains(., "Aggiungi")]'))
-    )
-    add_button.click()
-    # The confirmation popup is a native Chrome dialog – press Tab then Enter to confirm "Add extension"
-    time.sleep(2)
-    pyautogui.press('tab')
-    time.sleep(0.3)
-    pyautogui.press('enter')
-    time.sleep(3)
-    # Close any extra tabs opened by the extension
-    if len(driver.window_handles) > 1:
-        main_handle = driver.window_handles[0]
-        for handle in driver.window_handles[1:]:
-            driver.switch_to.window(handle)
-            driver.close()
-        driver.switch_to.window(main_handle)
-    print(f"{timestamp()} {Fore.GREEN}NopeCHA extension installed!{Style.RESET_ALL}")
+def log(msg, color=Fore.BLUE):
+    print(f"{timestamp()} {color}{msg}{Style.RESET_ALL}", flush=True)
 
-def generate_yopmail_email():
-    username = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-    email = f"{username}@gmail.com" # replaced whatever that was with gmail cuz that shi aint working 
-    return username, email
+
+def random_sleep(base=2, variation=3):
+    time.sleep(base + random.uniform(0, variation))
+
+
+def generate_email():
+    user = "".join(random.choices(string.ascii_lowercase, k=11))
+    return f"{user}{''.join(random.choices(string.digits, k=6))}@gmail.com"
+
 
 def generate_random_string(length=12):
-    characters = string.ascii_letters + string.digits
-    return ''.join(random.choice(characters) for i in range(length))
+    return "".join(random.choices(string.ascii_letters + string.digits, k=length))
+
+
+def normalize_proxy(line):
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return None
+    if "://" in line:
+        return line
+    parts = line.split(":")
+    if len(parts) == 2:
+        return f"http://{parts[0]}:{parts[1]}"
+    if len(parts) == 4:
+        return f"http://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}"
+    return None
+
+
+def load_proxies():
+    if not os.path.isfile(PROXY_FILE):
+        return []
+    out = []
+    with open(PROXY_FILE, encoding="utf-8") as f:
+        for line in f:
+            p = normalize_proxy(line)
+            if p:
+                out.append(p)
+    return out
+
+
+PROXIES = load_proxies()
+
+
+def pick_proxy():
+    return random.choice(PROXIES) if PROXIES else None
+
+
+def chrome_proxy_flag(proxy):
+    """Chrome cannot take credentials in --proxy-server."""
+    if not proxy:
+        return None
+    u = urlsplit(proxy)
+    host = u.hostname or ""
+    port = f":{u.port}" if u.port else ""
+    return f"http://{host}{port}"
+
+
+def save_credentials(email, password, token):
+    with open(TOKENS_FILE, "a", encoding="utf-8") as f:
+        f.write(token + "\n")
+    with open(EVS_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{email}:{password}:{token}\n")
+    log("token saved to tokens.txt and evs.txt", Fore.GREEN)
+
+
+# -------------------------------------------------------------- rate limits
+
+def account_ratelimit():
+    """Ask Discord how long registration is blocked, using a throwaway identity."""
+    try:
+        mail = f"{generate_email()}"
+        client = tls_client.Session(client_identifier="chrome_110")
+        client.headers = {
+            "Accept": "*/*",
+            "Content-Type": "application/json",
+            "Origin": "https://discord.com",
+            "Referer": "https://discord.com/register",
+            "User-Agent": API_HEADERS["user-agent"],
+            "X-Discord-Locale": "en-US",
+        }
+        payload = {
+            "email": mail,
+            "password": "ultimate12$$",
+            "date_of_birth": DOB,
+            "username": mail,
+            "consent": True,
+            "captcha_service": "hcaptcha",
+            "global_name": GLOBAL_NAME,
+            "captcha_key": None,
+            "invite": None,
+            "promotional_email_opt_in": False,
+            "gift_code_sku_id": None,
+        }
+        req = client.post("https://discord.com/api/v9/auth/register", json=payload)
+        if "The resource is being rate limited" in req.text:
+            return req.json().get("retry_after", 1)
+        return 1
+    except Exception as e:
+        log(f"rate limit probe failed: {e}", Fore.YELLOW)
+        return 1
+
+
+# ------------------------------------------------------------------ browser
+
+def get_chrome_major_version():
+    binary = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
+    try:
+        out = subprocess.check_output([binary, "--version"], stderr=subprocess.STDOUT).decode()
+        m = re.search(r"(\d+)\.", out)
+        return int(m.group(1)) if m else None
+    except Exception as e:
+        log(f"could not detect chrome version: {e}", Fore.YELLOW)
+        return None
+
+
+def build_driver(proxy):
+    profile = tempfile.mkdtemp(prefix="chr-")
+    options = uc.ChromeOptions()
+    options.binary_location = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
+    options.add_argument(f"--user-data-dir={profile}")
+    options.add_argument("--lang=en-US")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("prefs", {"intl.accept_languages": "en-US,en"})
+    flag = chrome_proxy_flag(proxy)
+    if flag:
+        options.add_argument(f"--proxy-server={flag}")
+        log(f"browser proxy: {flag}", Fore.MAGENTA)
+
+    driver = uc.Chrome(
+        options=options,
+        driver_executable_path=os.environ.get("CHROMEDRIVER_BIN", "/usr/bin/chromedriver"),
+        version_main=get_chrome_major_version(),
+    )
+    driver.set_window_size(1920, 1080)
+    driver._profile_dir = profile
+    return driver
+
+
+def close_driver(driver):
+    if not driver:
+        return
+    profile = getattr(driver, "_profile_dir", None)
+    try:
+        driver.quit()
+        log("driver closed", Fore.GREEN)
+    except Exception:
+        pass
+    if profile:
+        shutil.rmtree(profile, ignore_errors=True)
+
 
 def fill_date_of_birth(driver, month, day, year):
-    from selenium.webdriver.support.ui import Select as SeleniumSelect
+    month_names = ["January", "February", "March", "April", "May", "June", "July",
+                   "August", "September", "October", "November", "December"]
 
-    month_names = ["January","February","March","April","May","June",
-                   "July","August","September","October","November","December"]
-
-    # Strategy 1: native <select> elements
     try:
         selects = WebDriverWait(driver, 5).until(
-            EC.presence_of_all_elements_located((By.TAG_NAME, "select"))
-        )
+            EC.presence_of_all_elements_located((By.TAG_NAME, "select")))
         if len(selects) >= 3:
             SeleniumSelect(selects[0]).select_by_visible_text(month_names[month - 1])
             time.sleep(0.3)
@@ -155,195 +235,315 @@ def fill_date_of_birth(driver, month, day, year):
             time.sleep(0.3)
             SeleniumSelect(selects[2]).select_by_visible_text(str(year))
             time.sleep(0.3)
-            print(f"{timestamp()} {Fore.GREEN}Date set.{Style.RESET_ALL}")
-            return
+            log("date set", Fore.GREEN)
+            return True
     except Exception:
         pass
 
-    # Strategy 2: React Select / custom dropdowns (role="combobox")
-    def click_and_pick(field_index, value_text):
-        containers = driver.find_elements(By.XPATH, '//*[@role="combobox"]')
-        ActionChains(driver).move_to_element(containers[field_index]).click().perform()
+    def click_and_pick(index, value):
+        boxes = driver.find_elements(By.XPATH, '//*[@role="combobox"]')
+        ActionChains(driver).move_to_element(boxes[index]).click().perform()
         time.sleep(0.4)
-        # Type to filter the option list
-        ActionChains(driver).send_keys(value_text).perform()
+        ActionChains(driver).send_keys(value).perform()
         time.sleep(0.4)
-        opt = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((By.XPATH,
-                f'//*[@role="option"][normalize-space(.)="{value_text}"]'))
-        )
+        opt = WebDriverWait(driver, 5).until(EC.element_to_be_clickable(
+            (By.XPATH, f'//*[@role="option"][normalize-space(.)="{value}"]')))
         driver.execute_script("arguments[0].scrollIntoView(true);", opt)
         driver.execute_script("arguments[0].click();", opt)
         time.sleep(0.3)
 
-    WebDriverWait(driver, 10).until(
-        EC.presence_of_all_elements_located((By.XPATH, '//*[@role="combobox"]'))
-    )
-    click_and_pick(0, month_names[month - 1])
-    click_and_pick(1, str(day))
-    click_and_pick(2, str(year))
-    print(f"{timestamp()} {Fore.GREEN}Date set.{Style.RESET_ALL}")
-
-def get_chrome_major_version():
-    """Return installed Chromium major version so the driver matches."""
-    binary = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
     try:
-        out = subprocess.check_output([binary, "--version"], stderr=subprocess.STDOUT).decode()
-        m = re.search(r"(\d+)\.", out)
-        return int(m.group(1)) if m else None
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located((By.XPATH, '//*[@role="combobox"]')))
+        click_and_pick(0, month_names[month - 1])
+        click_and_pick(1, str(day))
+        click_and_pick(2, str(year))
+        log("date set", Fore.GREEN)
+        return True
     except Exception as e:
-        print(f"{timestamp()} {Fore.YELLOW}Could not detect Chrome version: {e}{Style.RESET_ALL}")
-        return None
-        
-def main():
-    print(Colorate.Vertical(Colors.purple_to_blue, Center.XCenter(banner)))
-    while True:
-        username, email = generate_yopmail_email()
-        print(f"{timestamp()} {Fore.BLUE}Using temporary email: {email}{Style.RESET_ALL}")
-        if not email:
-            print(f"{timestamp()} {Fore.RED}Failed to create temporary email.{Style.RESET_ALL}")
-            continue
-        print_templog(email)
-        driver = None
-        try:
-            options = uc.ChromeOptions()
-            options.binary_location = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
+        log(f"date fill failed: {e}", Fore.RED)
+        return False
 
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--disable-software-rasterizer")
-            options.add_argument("--disable-popup-blocking")
-            options.add_argument("--no-first-run")
-            options.add_argument("--no-default-browser-check")
-            options.add_argument("--disable-background-networking")
-            options.add_argument("--window-size=1920,1080")
-            options.add_argument("--ignore-certificate-errors")
-            options.add_argument("--lang=en-US")
-            options.add_experimental_option("prefs", {"intl.accept_languages": "en-US,en"})
 
-            driver = uc.Chrome(
-                options=options,
-                driver_executable_path=os.environ.get("CHROMEDRIVER_BIN", "/usr/bin/chromedriver"),
-                version_main=get_chrome_major_version(),
-            )
-            driver.set_window_size(1920, 1080)
-            
-            install_nopecha(driver)
-            
-            driver.get("https://discord.com/register")
-            WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.NAME, "email")))
-            driver.find_element(By.NAME, "email").send_keys(email)
-            driver.find_element(By.NAME, "global_name").send_keys("Lunarxterm")
-            username = generate_random_string()
-            driver.find_element(By.NAME, "username").send_keys(username)
-            driver.find_element(By.NAME, "password").send_keys(email)
-            
-            print(f"{timestamp()} {Fore.YELLOW}Trying to set the date..{Style.RESET_ALL}")
-            fill_date_of_birth(driver, 9, 20, 2000)
-            # yes discord we agree to the Terms of service
-             
+def accept_terms(driver):
+    try:
+        boxes = WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located((By.XPATH, "//input[@type='checkbox']")))
+        clicked = 0
+        for box in boxes:
+            if not box.is_selected():
+                driver.execute_script("arguments[0].scrollIntoView(true);", box)
+                time.sleep(0.3)
+                driver.execute_script("arguments[0].click();", box)
+                clicked += 1
+        log(f"{clicked} checkbox(es) ticked", Fore.BLUE)
+    except Exception as e:
+        log(f"terms click failed: {e}", Fore.YELLOW)
+
+
+def submit_button(driver):
+    return WebDriverWait(driver, 20).until(
+        EC.element_to_be_clickable((By.XPATH, '//button[@type="submit"]')))
+
+
+def read_sitekey(driver):
+    """Pull the live hCaptcha sitekey out of the page; fall back to Discord's."""
+    for _ in range(24):
+        for el in driver.find_elements(By.CSS_SELECTOR, "[data-sitekey]"):
+            value = el.get_attribute("data-sitekey")
+            if value:
+                return value
+        for frame in driver.find_elements(By.CSS_SELECTOR, 'iframe[src*="hcaptcha"]'):
+            m = re.search(r"sitekey=([0-9a-fA-F-]{36})", frame.get_attribute("src") or "")
+            if m:
+                return m.group(1)
+        time.sleep(0.5)
+    log("sitekey not found in DOM, using built-in", Fore.YELLOW)
+    return DISCORD_SITEKEY
+
+
+INJECT_JS = r"""
+const token = arguments[0];
+const hits = [];
+const fire = (el, type) => el.dispatchEvent(new Event(type, {bubbles: true}));
+
+for (const sel of ['textarea[name="h-captcha-response"]', 'textarea#h-captcha-response',
+                   'textarea[name="g-recaptcha-response"]', 'textarea#g-recaptcha-response']) {
+  for (const ta of document.querySelectorAll(sel)) {
+    ta.value = token; fire(ta, 'input'); fire(ta, 'change'); hits.push('field:' + sel);
+  }
+}
+
+for (const node of document.querySelectorAll('[data-callback], .h-captcha, iframe[src*="hcaptcha"]')) {
+  const cb = node.getAttribute && node.getAttribute('data-callback');
+  if (cb && typeof window[cb] === 'function') {
+    try { window[cb](token); hits.push('callback:' + cb); } catch (e) {}
+  }
+}
+
+for (const el of document.querySelectorAll('form, div, section')) {
+  const key = Object.keys(el).find(k => k.startsWith('__reactProps$'));
+  if (!key) continue;
+  const props = el[key] || {};
+  for (const name of ['onCaptchaVerify', 'onCaptchaSuccess', 'onVerify',
+                      'onCaptchaSolved', 'handleCaptchaSuccess', 'onHCaptchaSuccess']) {
+    if (typeof props[name] === 'function') {
+      try { props[name](token); hits.push('react:' + name); } catch (e) {}
+    }
+  }
+}
+
+try { if (window.hcaptcha && window.hcaptcha.execute) hits.push('widget-live'); } catch (e) {}
+return hits;
+"""
+
+
+def inject_token(driver, token):
+    try:
+        hits = driver.execute_script(INJECT_JS, token) or []
+        log(f"token injected ({len(hits)} hook(s): {', '.join(hits[:3]) or 'none'})", Fore.BLUE)
+        return bool(hits)
+    except WebDriverException as e:
+        log(f"injection error: {e}", Fore.RED)
+        return False
+
+
+def page_error(driver):
+    try:
+        text = driver.find_element(By.TAG_NAME, "body").text.lower()
+    except Exception:
+        return ""
+    for needle in ("captcha", "rate limit", "something went wrong", "already registered"):
+        if needle in text:
+            return needle
+    return ""
+
+
+def register_in_browser(email):
+    password = FIXED_PASSWORD or email
+    proxy = pick_proxy()
+    driver = build_driver(proxy)
+    try:
+        driver.get("https://discord.com/register")
+        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.NAME, "email")))
+        driver.find_element(By.NAME, "email").send_keys(email)
+        driver.find_element(By.NAME, "global_name").send_keys(GLOBAL_NAME)
+        driver.find_element(By.NAME, "username").send_keys(generate_random_string())
+        driver.find_element(By.NAME, "password").send_keys(password)
+
+        month, day, year = (int(x) for x in DOB.split("-")[1:3][::-1]) if False else (None, None, None)
+        parts = DOB.split("-")
+        year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+
+        log("setting date of birth...", Fore.YELLOW)
+        fill_date_of_birth(driver, month, day, year)
+        accept_terms(driver)
+
+        limit = account_ratelimit()
+        if limit and limit > 1:
+            log(f"rate limited for {limit}s, waiting", Fore.RED)
+            time.sleep(limit)
+
+        submit_button(driver).click()
+        log("form submitted, waiting for captcha widget...", Fore.YELLOW)
+
+        token = None
+        for attempt in range(1, SOLVE_ATTEMPTS + 1):
+            sitekey = read_sitekey(driver)
+            log(f"attempt {attempt}/{SOLVE_ATTEMPTS} - solving {sitekey[:8]}...", Fore.YELLOW)
             try:
-                locator = (By.XPATH, "//input[@type='checkbox']")
-                
-                checkboxes = WebDriverWait(driver, 10).until(
-                    EC.presence_of_all_elements_located(locator)
-                )
-                
-                print(f"{timestamp()} {Fore.BLUE}Got {Style.RESET_ALL}{Fore.GREEN}{len(checkboxes)}{Style.RESET_ALL}{Fore.BLUE} checkboxes. Clicking...{Style.RESET_ALL}")
+                token = solve_hcaptcha(sitekey, "https://discord.com/register", proxy, log=log)
+            except SolverError as e:
+                log(f"solve failed: {e}", Fore.RED)
+                random_sleep(3, 4)
+                continue
 
-                for checkbox in checkboxes:
-                    if not checkbox.is_selected():
-                        driver.execute_script("arguments[0].scrollIntoView(true);", checkbox)
-                        time.sleep(0.5)
-                        driver.execute_script("arguments[0].click();", checkbox)
-                        
-                print(f"{timestamp()} {Fore.BLUE}Alright done.")
+            inject_token(driver, token)
+            time.sleep(1)
+            try:
+                submit_button(driver).click()
+            except Exception:
+                driver.execute_script("document.querySelector('button[type=submit]')?.click()")
 
-            except Exception as e:
-                print(f"{timestamp()} {Fore.RED}Shit, got an error.. {e}")
+            try:
+                WebDriverWait(driver, 45).until(EC.url_contains("discord.com/channels/@me"))
+                log("redirected into the app", Fore.GREEN)
+                break
+            except TimeoutException:
+                err = page_error(driver)
+                log(f"still on the form (hint: {err or 'none'})", Fore.YELLOW)
+                token = None
 
-            finally:
-                continue_button = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, '//button[@type="submit"]')))
-                limit = account_ratelimit()
-                if limit > 1:
-                    print(f'{timestamp()}{Fore.RED}[INFO] Ratelimited for {limit} seconds. Retrying after ratelimit disappears.')
-                    time.sleep(limit)
-                continue_button.click()
-                print(f"{timestamp()} {Fore.BLUE}Waiting for NopeCHA to solve captcha...{Style.RESET_ALL}")
-                
-                # while True: nah
-                WebDriverWait(driver, 300).until(EC.url_contains("discord.com/channels/@me"))
-                print(f"{timestamp()} {Fore.GREEN}Redirected to the Discord page!{Style.RESET_ALL}")
+        if token is None:
+            log("registration did not complete", Fore.RED)
+            return None
 
-                    
-                    # lets not verify any email here lol (too lazy to do it)
-                """
-                usernamebaba = email.split('@')[0]
-                driver.get(f"https://yopmail.com/en/?login={usernamebaba}")
-                print(f"{timestamp()} {Fore.BLUE}Navigate to Yopmail and verify email manually.{Style.RESET_ALL}")
-                print(f"{timestamp()} {Fore.BLUE}Once you've solved the CAPTCHA and clicked the verification link, Close the Browser to continue.{Style.RESET_ALL}")
+        time.sleep(3)
+        local = driver.execute_script("return window.localStorage.getItem('token')")
+        local = (local or "").strip('"')
+        if local:
+            return email, password, local
 
-                while True:
-                    try:
-                        driver.title  
-                    except Exception:
-                        print(f"{timestamp()} {Fore.GREEN}Browser closed by the user. Proceeding...{Style.RESET_ALL}")
-                        break
-                                                """
-                driver.quit()
-                print(f"{timestamp()} {Fore.BLUE}Waiting for NopeCHA to solve captcha...{Style.RESET_ALL}")
-                success = login_and_fetch_token(email, email)
-                if success:
-                    print(f"{timestamp()} {Fore.GREEN}Process complete. Restarting...{Style.RESET_ALL}")
-                else:
-                    print(f"{timestamp()} {Fore.RED}Failed to fetch the token.{Style.RESET_ALL}")
+        log("localStorage empty, trying API login", Fore.YELLOW)
+        return email, password, None
+    finally:
+        close_driver(driver)
 
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                    print(f"{timestamp()} {Fore.GREEN}Driver closed successfully.{Style.RESET_ALL}")
-                except Exception as e:
-                    print(f"{timestamp()} {Fore.YELLOW}Driver already closed or error occurred: {e}{Style.RESET_ALL}")
-                finally:
-                    driver = None 
-                    
+
+# ---------------------------------------------------------------- api mode
+
+def register_via_api(email):
+    password = FIXED_PASSWORD or email
+    proxy = pick_proxy()
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+
+    for attempt in range(1, SOLVE_ATTEMPTS + 1):
+        log(f"api attempt {attempt}/{SOLVE_ATTEMPTS} - solving captcha...", Fore.YELLOW)
+        try:
+            captcha = solve_hcaptcha(DISCORD_SITEKEY, "https://discord.com/register", proxy, log=log)
+        except SolverError as e:
+            log(f"solve failed: {e}", Fore.RED)
+            continue
+
+        payload = {
+            "email": email,
+            "password": password,
+            "date_of_birth": DOB,
+            "username": generate_random_string(),
+            "consent": True,
+            "captcha_service": "hcaptcha",
+            "global_name": GLOBAL_NAME,
+            "captcha_key": captcha,
+            "invite": None,
+            "promotional_email_opt_in": False,
+            "gift_code_sku_id": None,
+        }
+        try:
+            r = requests.post("https://discord.com/api/v9/auth/register", json=payload,
+                              headers=API_HEADERS, timeout=40, proxies=proxies)
+        except requests.RequestException as e:
+            log(f"register request failed: {e}", Fore.RED)
+            continue
+
+        if r.status_code == 200:
+            token = (r.json() or {}).get("token")
+            if token:
+                return email, password, token
+            log("200 without a token", Fore.RED)
+            continue
+
+        log(f"register rejected {r.status_code}: {r.text[:180]}", Fore.RED)
+        if r.status_code == 429:
+            try:
+                time.sleep(float(r.json().get("retry_after", 5)) + 1)
+            except Exception:
+                time.sleep(5)
+    return None
+
+
+# --------------------------------------------------------------------- main
+
+def main():
+    log(f"mode={REGISTER_MODE} solvers={[p.name for p in configured_solvers(log)]}", Fore.MAGENTA)
+    if PROXIES:
+        log(f"{len(PROXIES)} proxies loaded", Fore.MAGENTA)
+    else:
+        log("no proxies loaded - datacenter IP, expect more captchas", Fore.YELLOW)
+
+    while True:
+        email = generate_email()
+        log(f"using email {email}", Fore.BLUE)
+        try:
+            if REGISTER_MODE == "api":
+                result = register_via_api(email)
+            else:
+                result = register_in_browser(email)
+                if result and not result[2]:
+                    result = (result[0], result[1], None)
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            log("iteration crashed:", Fore.RED)
+            traceback.print_exc()
+            result = None
+
+        if result:
+            email, password, token = result
+            if not token:
+                log("no token in the browser session, falling back to login", Fore.YELLOW)
+                token = login_and_fetch_token(email, password)
+            if token:
+                save_credentials(email, password, token)
+                log("account done, restarting loop", Fore.GREEN)
+            else:
+                log(f"no token for {email}", Fore.RED)
+        else:
+            log("iteration failed, retrying", Fore.RED)
+
+        random_sleep(4, 5)
+
+
 def login_and_fetch_token(email, password):
     data = {"login": email, "password": password, "undelete": "false"}
-    headers = {
-        "content-type": "application/json",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/84.0.4147.135 Safari/537.36",
-    }
     try:
-        r = requests.post("https://discord.com/api/v9/auth/login", json=data, headers=headers)
-        
+        r = requests.post("https://discord.com/api/v9/auth/login", json=data,
+                          headers=API_HEADERS, timeout=30)
         if r.status_code == 200:
-            token = r.json().get("token")
+            token = (r.json() or {}).get("token")
             if token:
-                print(f"{timestamp()} {Fore.GREEN}Token fetched: {token}{Style.RESET_ALL}")
-                with open("tokens.txt", "a") as f:
-                    f.write(f"{token}\n")
-                with open("evs.txt", "a") as f:
-                    f.write(f"{email}:{password}:{token}\n")
-                print(f"{timestamp()} {Fore.GREEN}Token Saved to evs.txt and tokens.txt{Style.RESET_ALL}")
-                return True
-        
+                return token
+            log("login ok but no token field", Fore.RED)
         elif "captcha-required" in r.text:
-            print(f"{timestamp()} {Fore.RED}Discord returned captcha, stopping retry.{Style.RESET_ALL}")
-            return False
-            
+            log("login wants its own captcha - account still created", Fore.YELLOW)
         else:
-            print(f"{timestamp()} {Fore.RED}Failed to fetch token. Status Code: {r.status_code}")
-            print(f"{timestamp()} {Fore.YELLOW}Response: {r.text}")
-            return False
-
-    except requests.exceptions.RequestException as e:
-        print(f"{timestamp()} {Fore.RED}A connection error occurred: {e}")
-        return False
-        
-    return False 
+            log(f"login failed {r.status_code}: {r.text[:150]}", Fore.RED)
+    except requests.RequestException as e:
+        log(f"login error: {e}", Fore.RED)
+    return None
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        log("stopped by user", Fore.YELLOW)
