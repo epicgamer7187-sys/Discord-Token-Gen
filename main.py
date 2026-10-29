@@ -40,6 +40,7 @@ SITEKEY_CACHE = os.environ.get(
     "SITEKEY_CACHE", "/data/sitekey.txt" if os.path.isdir("/data") else "/tmp/sitekey.txt")
 ENTERPRISE_OVERRIDE = os.environ.get("SOLVER_ENTERPRISE")
 INVISIBLE_OVERRIDE = os.environ.get("SOLVER_INVISIBLE")
+PROXY_CHECK = os.environ.get("PROXY_CHECK", "1") == "1"
 
 REGISTER_URL = "https://discord.com/api/v9/auth/register"
 PAGE_URL = "https://discord.com/register"
@@ -129,15 +130,44 @@ def load_proxies():
 PROXIES = load_proxies()
 
 
-def pick_proxy():
-    return random.choice(PROXIES) if PROXIES else None
-
-
 def chrome_proxy_flag(proxy):
     if not proxy:
         return None
     u = urlsplit(proxy)
     return f"http://{u.hostname}{':' + str(u.port) if u.port else ''}"
+
+
+def proxy_label(proxy):
+    if not proxy:
+        return "direct"
+    u = urlsplit(proxy)
+    return f"{u.hostname}:{u.port}"
+
+
+def exit_ip(proxy=None, timeout=10):
+    """Confirm the proxy works and show the IP the world will see."""
+    try:
+        r = requests.get("https://api.ipify.org", timeout=timeout,
+                         proxies={"http": proxy, "https": proxy} if proxy else None)
+        return r.text.strip() if r.ok else None
+    except Exception:
+        return None
+
+
+def pick_proxy():
+    """Sticky per account: one proxy for the solve and the submit."""
+    if not PROXIES:
+        return None
+    if not PROXY_CHECK:
+        return random.choice(PROXIES)
+    for _ in range(min(3, len(PROXIES))):
+        candidate = random.choice(PROXIES)
+        ip = exit_ip(candidate, timeout=8)
+        if ip:
+            log(f"proxy {proxy_label(candidate)} -> exit {ip}", Fore.MAGENTA)
+            return candidate
+        log(f"proxy {proxy_label(candidate)} dead, next", Fore.YELLOW)
+    return random.choice(PROXIES)
 
 
 def save_credentials(email, password, token):
@@ -184,7 +214,6 @@ def save_shot(driver, tag):
 
 
 def challenge_flags(challenge):
-    """Discord spells the invisible flag two ways depending on build."""
     invisible_raw = (challenge.get("should_serve_invisible")
                      or challenge.get("should_serve_invisible_captcha"))
     if INVISIBLE_OVERRIDE is not None:
@@ -248,7 +277,6 @@ def build_payload(email, password, captcha=None, rqdata=None, session_id=None):
 
 
 def fetch_challenge(client, email, password):
-    """Discord answers a tokenless register with the challenge descriptor."""
     r = client.post(REGISTER_URL, json=build_payload(email, password))
     if r.status_code == 400 and "captcha-required" in r.text:
         try:
@@ -265,10 +293,11 @@ def fetch_challenge(client, email, password):
 
 
 def api_register(email, password, captcha=None, rqdata=None, session_id=None):
+    # one proxy for the whole account: the solve and the submit must share an IP
     proxy = pick_proxy()
+    if not proxy:
+        log("running without a proxy - enterprise IP check will likely reject", Fore.YELLOW)
     client = make_client(proxy)
-    if proxy:
-        log(f"api proxy: {proxy}", Fore.MAGENTA)
 
     for attempt in range(1, SOLVE_ATTEMPTS + 1):
         if captcha is None:
@@ -285,7 +314,7 @@ def api_register(email, password, captcha=None, rqdata=None, session_id=None):
             log(f"attempt {attempt}/{SOLVE_ATTEMPTS} challenge: sitekey={sitekey[:8]}... "
                 f"service={challenge.get('captcha_service')} invisible={invisible} "
                 f"enterprise={enterprise} session={'yes' if session_id else 'no'} "
-                f"rqdata={len(rqdata) if rqdata else 0}b", Fore.MAGENTA)
+                f"rqdata={len(rqdata) if rqdata else 0}b via {proxy_label(proxy)}", Fore.MAGENTA)
 
             try:
                 captcha = solve_hcaptcha(sitekey, PAGE_URL, proxy, rqdata=rqdata,
@@ -592,7 +621,8 @@ def main():
     if PROXIES:
         log(f"{len(PROXIES)} proxies loaded", Fore.MAGENTA)
     else:
-        log("no proxies loaded - datacenter IP, expect more captchas", Fore.YELLOW)
+        log("NO PROXIES - enterprise IP check will reject every token. "
+            "Put proxies in proxies.txt or /data/proxies.txt", Fore.RED)
 
     while True:
         email = generate_email()
@@ -645,7 +675,4 @@ def login_and_fetch_token(email, password):
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        log("stopped by user", Fore.YELLOW)
+    main()
