@@ -26,7 +26,7 @@ from captcha_solver import solve_hcaptcha, configured as configured_solvers, DIS
 
 init(autoreset=True)
 
-REGISTER_MODE = os.environ.get("REGISTER_MODE", "api").strip().lower()
+REGISTER_MODE = os.environ.get("REGISTER_MODE", "hybrid").strip().lower()
 GLOBAL_NAME = os.environ.get("GLOBAL_NAME", "Lunarxterm")
 FIXED_PASSWORD = os.environ.get("ACCOUNT_PASSWORD", "").strip()
 DOB = os.environ.get("DATE_OF_BIRTH", "2000-09-20").strip()
@@ -37,6 +37,8 @@ SOLVE_ATTEMPTS = int(os.environ.get("SOLVE_ATTEMPTS", "3"))
 SUBMIT_WAIT = int(os.environ.get("SUBMIT_WAIT", "12"))
 ENTERPRISE_OVERRIDE = os.environ.get("SOLVER_ENTERPRISE")
 SHOT_DIR = os.environ.get("SHOT_DIR", "/data/shots" if os.path.isdir("/data") else "/tmp/shots")
+SITEKEY_CACHE = os.environ.get(
+    "SITEKEY_CACHE", "/data/sitekey.txt" if os.path.isdir("/data") else "/tmp/sitekey.txt")
 
 banner = f'''
 ██████╗ ██╗██╗   ██╗███████╗██████╗ 
@@ -140,6 +142,34 @@ def save_credentials(email, password, token):
     with open(EVS_FILE, "a", encoding="utf-8") as f:
         f.write(f"{email}:{password}:{token}\n")
     log("token saved to tokens.txt and evs.txt", Fore.GREEN)
+
+
+# ------------------------------------------------------------------ sitekeys
+
+def sitekey_candidates():
+    """Env override -> cached live key -> built-in fallback, deduped."""
+    out = []
+    env = os.environ.get("DISCORD_SITEKEY", "").strip()
+    if env:
+        out.append(env)
+    try:
+        if os.path.isfile(SITEKEY_CACHE):
+            cached = open(SITEKEY_CACHE, encoding="utf-8").read().strip()
+            if cached and cached not in out:
+                out.append(cached)
+    except Exception:
+        pass
+    if DISCORD_SITEKEY not in out:
+        out.append(DISCORD_SITEKEY)
+    return out
+
+
+def cache_sitekey(key):
+    try:
+        with open(SITEKEY_CACHE, "w", encoding="utf-8") as f:
+            f.write(key)
+    except Exception:
+        pass
 
 
 def wants_enterprise(sitekey, rqdata):
@@ -324,9 +354,8 @@ def accept_terms(driver):
         return False
     log(f"{ticked} consent control(s) clicked", Fore.BLUE)
     time.sleep(0.5)
-
-    states = [(_is_checked(el))
-              for el in driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox'], [role='checkbox']")]
+    states = [_is_checked(el) for el in
+              driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox'], [role='checkbox']")]
     if states and not all(states):
         log(f"consent state after click: {states}", Fore.YELLOW)
         return all(states)
@@ -353,29 +382,39 @@ def click_submit(driver):
 
 
 def read_widget(driver):
-    """Return (sitekey, rqdata) from the live widget, or the built-in key."""
+    """Return (sitekey, rqdata) from the live widget. rqdata comes from the
+    widget attributes, the iframe URL, or an inline JSON payload."""
     sitekey = rqdata = None
     for _ in range(24):
         for el in driver.find_elements(By.CSS_SELECTOR, "[data-sitekey]"):
             sitekey = sitekey or el.get_attribute("data-sitekey")
             rqdata = rqdata or el.get_attribute("data-rqdata")
-        if not sitekey:
-            for frame in driver.find_elements(By.CSS_SELECTOR, 'iframe[src*="hcaptcha"]'):
-                src = frame.get_attribute("src") or ""
-                m = re.search(r"[?&]sitekey=([0-9a-fA-F-]{36})", src)
+        for frame in driver.find_elements(By.CSS_SELECTOR, 'iframe[src*="hcaptcha"]'):
+            src = frame.get_attribute("src") or ""
+            m = re.search(r"[?&]sitekey=([0-9a-fA-F-]{36})", src)
+            if m:
+                sitekey = sitekey or m.group(1)
+            m = re.search(r"[?&]rqdata=([^&]+)", src)
+            if m:
+                rqdata = rqdata or unquote(m.group(1))
+        if sitekey and rqdata:
+            break
+        if not rqdata:
+            try:
+                m = re.search(r'"rqdata"\s*:\s*"([^"]{20,})"', driver.page_source)
                 if m:
-                    sitekey = sitekey or m.group(1)
-                m = re.search(r"[?&]rqdata=([^&]+)", src)
-                if m:
-                    rqdata = rqdata or unquote(m.group(1))
-        if sitekey:
+                    rqdata = m.group(1)
+            except Exception:
+                pass
+        if sitekey and rqdata:
             break
         time.sleep(0.5)
 
     if not sitekey:
-        log("sitekey not in DOM, using built-in key", Fore.YELLOW)
-        sitekey = DISCORD_SITEKEY
-    log(f"widget: sitekey={sitekey[:8]}... rqdata={'yes' if rqdata else 'no'}", Fore.MAGENTA)
+        log("sitekey not in DOM, using cached/built-in key", Fore.YELLOW)
+    else:
+        cache_sitekey(sitekey)
+        log(f"widget: sitekey={sitekey[:8]}... rqdata={'yes' if rqdata else 'no'}", Fore.MAGENTA)
     return sitekey, rqdata
 
 
@@ -438,88 +477,68 @@ def page_error(driver):
     return ""
 
 
-def register_in_browser(email):
+def open_register_page(driver, email, password):
+    driver.get("https://discord.com/register")
+    WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.NAME, "email")))
+    driver.find_element(By.NAME, "email").send_keys(email)
+    driver.find_element(By.NAME, "global_name").send_keys(GLOBAL_NAME)
+    driver.find_element(By.NAME, "username").send_keys(generate_random_string())
+    driver.find_element(By.NAME, "password").send_keys(password)
+
+    parts = DOB.split("-")
+    log("setting date of birth...", Fore.YELLOW)
+    fill_date_of_birth(driver, int(parts[1]), int(parts[2]), int(parts[0]))
+    if not accept_terms(driver):
+        save_shot(driver, "consent")
+
+    limit = account_ratelimit()
+    if limit and limit > 1:
+        log(f"rate limited for {limit}s, waiting", Fore.RED)
+        time.sleep(limit)
+
+    click_submit(driver)
+    log("form submitted, waiting for the captcha widget...", Fore.YELLOW)
+    time.sleep(2)
+
+
+# ---------------------------------------------------------- hybrid register
+
+def register_hybrid(email):
+    """Browser renders the real challenge so we can lift sitekey + rqdata,
+    then the register call goes out over the API with a Chrome fingerprint."""
     password = FIXED_PASSWORD or email
     proxy = pick_proxy()
     driver = build_driver(proxy)
-    token = None
-    rqdata = None
-    sitekey = None
-    landed = False
     try:
-        driver.get("https://discord.com/register")
-        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.NAME, "email")))
-        driver.find_element(By.NAME, "email").send_keys(email)
-        driver.find_element(By.NAME, "global_name").send_keys(GLOBAL_NAME)
-        driver.find_element(By.NAME, "username").send_keys(generate_random_string())
-        driver.find_element(By.NAME, "password").send_keys(password)
-
-        parts = DOB.split("-")
-        log("setting date of birth...", Fore.YELLOW)
-        fill_date_of_birth(driver, int(parts[1]), int(parts[2]), int(parts[0]))
-        if not accept_terms(driver):
-            save_shot(driver, "consent")
-
-        limit = account_ratelimit()
-        if limit and limit > 1:
-            log(f"rate limited for {limit}s, waiting", Fore.RED)
-            time.sleep(limit)
-
-        click_submit(driver)
-        log("form submitted, waiting for the captcha widget...", Fore.YELLOW)
-        time.sleep(2)
+        open_register_page(driver, email, password)
+        sitekey, rqdata = read_widget(driver)
+        sitekey = sitekey or sitekey_candidates()[0]
+        enterprise = wants_enterprise(sitekey, rqdata)
 
         for attempt in range(1, SOLVE_ATTEMPTS + 1):
-            sitekey, rqdata = read_widget(driver)
-            enterprise = wants_enterprise(sitekey, rqdata)
-            log(f"attempt {attempt}/{SOLVE_ATTEMPTS} - enterprise={enterprise}", Fore.YELLOW)
+            log(f"hybrid attempt {attempt}/{SOLVE_ATTEMPTS} - enterprise={enterprise}", Fore.YELLOW)
             try:
                 token = solve_hcaptcha(sitekey, "https://discord.com/register", proxy,
                                        rqdata=rqdata, enterprise=enterprise, log=log)
             except SolverError as e:
                 log(f"solve failed: {e}", Fore.RED)
+                if attempt < SOLVE_ATTEMPTS:
+                    # widget may have re-issued a challenge with fresh rqdata
+                    again_key, again_rq = read_widget(driver)
+                    sitekey = again_key or sitekey
+                    rqdata = again_rq or rqdata
                 random_sleep(2, 3)
                 continue
 
-            inject_token(driver, token)
-            time.sleep(1)
-            click_submit(driver)
-
-            try:
-                WebDriverWait(driver, SUBMIT_WAIT).until(EC.url_contains("discord.com/channels/@me"))
-                log("redirected into the app", Fore.GREEN)
-                landed = True
-                break
-            except TimeoutException:
-                hint = page_error(driver)
-                log(f"still on the form (hint: {hint or 'none'})", Fore.YELLOW)
-                save_shot(driver, f"attempt{attempt}")
-                if hint in ("terms", "agree"):
-                    accept_terms(driver)
-                token = None
-
-        if landed:
-            time.sleep(3)
-            local = (driver.execute_script("return window.localStorage.getItem('token')") or "").strip('"')
-            if local:
-                return email, password, local
-            log("localStorage empty, will use API login", Fore.YELLOW)
-            return email, password, None
-
-        # ---- hand the solved token to the register API instead of retrying DOM
-        log("browser submit not completing, handing off to the register API", Fore.YELLOW)
-        if not token:
-            try:
-                token = solve_hcaptcha(sitekey or DISCORD_SITEKEY,
-                                       "https://discord.com/register", proxy,
-                                       rqdata=rqdata,
-                                       enterprise=wants_enterprise(sitekey or DISCORD_SITEKEY, rqdata),
-                                       log=log)
-            except SolverError as e:
-                log(f"handoff solve failed: {e}", Fore.RED)
-                return None
-        result = api_register(email, password, token, rqdata)
-        return result
+            result = api_register(email, password, token, rqdata)
+            if result:
+                return result
+            if attempt < SOLVE_ATTEMPTS:
+                again_key, again_rq = read_widget(driver)
+                sitekey = again_key or sitekey
+                rqdata = again_rq or rqdata
+            random_sleep(2, 3)
+        return None
     finally:
         close_driver(driver)
 
@@ -574,29 +593,86 @@ def api_register(email, password, captcha, rqdata=None):
 
 def register_via_api(email):
     password = FIXED_PASSWORD or email
-    sitekey = DISCORD_SITEKEY
-    rqdata = None
-    enterprise = wants_enterprise(sitekey, rqdata)
-
     for attempt in range(1, SOLVE_ATTEMPTS + 1):
-        log(f"api attempt {attempt}/{SOLVE_ATTEMPTS} - solving...", Fore.YELLOW)
-        try:
-            captcha = solve_hcaptcha(sitekey, "https://discord.com/register",
-                                     pick_proxy(), rqdata=rqdata,
-                                     enterprise=enterprise, log=log)
-        except SolverError as e:
-            log(f"solve failed: {e}", Fore.RED)
-            continue
-        result = api_register(email, password, captcha, rqdata)
-        if result:
-            return result
+        for sitekey in sitekey_candidates():
+            enterprise = wants_enterprise(sitekey, None)
+            log(f"api attempt {attempt}/{SOLVE_ATTEMPTS} key={sitekey[:8]}... "
+                f"enterprise={enterprise}", Fore.YELLOW)
+            try:
+                captcha = solve_hcaptcha(sitekey, "https://discord.com/register",
+                                         pick_proxy(), enterprise=enterprise, log=log)
+            except SolverError as e:
+                log(f"solve failed: {e}", Fore.RED)
+                continue
+            result = api_register(email, password, captcha)
+            if result:
+                return result
     return None
+
+
+# ------------------------------------------------------------- browser mode
+
+def register_in_browser(email):
+    password = FIXED_PASSWORD or email
+    proxy = pick_proxy()
+    driver = build_driver(proxy)
+    token = None
+    try:
+        open_register_page(driver, email, password)
+        sitekey, rqdata = read_widget(driver)
+        sitekey = sitekey or sitekey_candidates()[0]
+
+        for attempt in range(1, SOLVE_ATTEMPTS + 1):
+            enterprise = wants_enterprise(sitekey, rqdata)
+            log(f"attempt {attempt}/{SOLVE_ATTEMPTS} - enterprise={enterprise}", Fore.YELLOW)
+            try:
+                token = solve_hcaptcha(sitekey, "https://discord.com/register", proxy,
+                                       rqdata=rqdata, enterprise=enterprise, log=log)
+            except SolverError as e:
+                log(f"solve failed: {e}", Fore.RED)
+                random_sleep(2, 3)
+                continue
+
+            inject_token(driver, token)
+            time.sleep(1)
+            click_submit(driver)
+
+            try:
+                WebDriverWait(driver, SUBMIT_WAIT).until(EC.url_contains("discord.com/channels/@me"))
+                log("redirected into the app", Fore.GREEN)
+                time.sleep(3)
+                local = (driver.execute_script("return window.localStorage.getItem('token')") or "").strip('"')
+                if local:
+                    return email, password, local
+                log("localStorage empty, will use API login", Fore.YELLOW)
+                return email, password, None
+            except TimeoutException:
+                hint = page_error(driver)
+                log(f"still on the form (hint: {hint or 'none'})", Fore.YELLOW)
+                save_shot(driver, f"attempt{attempt}")
+                if hint in ("terms", "agree"):
+                    accept_terms(driver)
+                token = None
+
+        log("browser submit not completing, handing off to the register API", Fore.YELLOW)
+        if not token:
+            try:
+                token = solve_hcaptcha(sitekey, "https://discord.com/register", proxy,
+                                       rqdata=rqdata,
+                                       enterprise=wants_enterprise(sitekey, rqdata), log=log)
+            except SolverError as e:
+                log(f"handoff solve failed: {e}", Fore.RED)
+                return None
+        return api_register(email, password, token, rqdata)
+    finally:
+        close_driver(driver)
 
 
 # --------------------------------------------------------------------- main
 
 def main():
     log(f"mode={REGISTER_MODE} solvers={[p.name for p in configured_solvers(log)]}", Fore.MAGENTA)
+    log(f"sitekey candidates: {[k[:8] + '...' for k in sitekey_candidates()]}", Fore.MAGENTA)
     if PROXIES:
         log(f"{len(PROXIES)} proxies loaded", Fore.MAGENTA)
     else:
@@ -607,7 +683,12 @@ def main():
         email = generate_email()
         log(f"using email {email}", Fore.BLUE)
         try:
-            result = register_via_api(email) if REGISTER_MODE == "api" else register_in_browser(email)
+            if REGISTER_MODE == "api":
+                result = register_via_api(email)
+            elif REGISTER_MODE == "browser":
+                result = register_in_browser(email)
+            else:
+                result = register_hybrid(email)
         except KeyboardInterrupt:
             raise
         except Exception:
